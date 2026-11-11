@@ -177,7 +177,7 @@ def transcribe(src: Path, lang):
     return words
 
 
-def build_ass(words, workdir: Path) -> Path:
+def build_ass(words, workdir: Path, w=W, h=H, margin_v=640, size=88) -> Path:
     # Grupos de máx. 4 palabras; corta en pausas > 0.3 s o si el grupo dura > 1.4 s
     groups, cur = [], []
     for w in words:
@@ -212,13 +212,13 @@ def build_ass(words, workdir: Path) -> Path:
     # Zonas seguras: abajo ~640 px libres, derecha 160 px (botones), izquierda 100 px
     ass.write_text(f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: {W}
-PlayResY: {H}
+PlayResX: {w}
+PlayResY: {h}
 WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Sub,Arial Black,88,&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,8,4,2,100,160,640,1
+Style: Sub,Arial Black,{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,-1,0,0,0,100,100,1,0,1,8,4,2,100,160,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -301,7 +301,20 @@ def render(src: Path, out: Path, mode, subs, title, credit, facecam=None,
 
 
 # ---------------- 6. Metadatos ----------------
-def write_meta(out: Path, title, credit, text):
+def write_meta(out: Path, title, credit, text, ia_meta=None):
+    if ia_meta:
+        meta = [
+            "=== TIKTOK (descripción) ===", ia_meta["descripcion_tiktok"],
+            " ".join(ia_meta["hashtags"][:5]), "",
+            "=== YOUTUBE SHORTS ===", f"Título: {ia_meta['titulo_short'][:60]}",
+            f"Descripción: {ia_meta['descripcion_tiktok']} Créditos: {credit or 'streamer'}.",
+            " ".join(ia_meta["hashtags"][:3]), "", "=== TRANSCRIPCIÓN ===", text,
+        ]
+        if ia_meta.get("spoiler"):
+            meta.insert(0, "⚠ POSIBLE SPOILER (detectado por IA): revisa antes de subir\n")
+            print("⚠ posible spoiler (IA)")
+        out.with_suffix(".txt").write_text("\n".join(meta), encoding="utf-8")
+        return
     streamer = (credit or "").lstrip("@").strip()
     tags = ["#gta6", "#gtavi", "#gta", "#gaming"] + ([f"#{streamer}"] if streamer else [])
     hook = title or (text[:55] + "…" if len(text) > 55 else text) or "Esto pasó en GTA 6"
@@ -330,7 +343,7 @@ def write_meta(out: Path, title, credit, text):
 # ---------------- Proceso completo ----------------
 def process(src, out, start=None, end=None, title=None, credit=None,
             mode="blur", facecam=None, lang=None, subs=True,
-            cut=True, fx=True, sfx=None):
+            cut=True, fx=True, sfx=None, chat="", ia=True):
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as d:
@@ -342,9 +355,17 @@ def process(src, out, start=None, end=None, title=None, credit=None,
         if peaks:
             print(f"  zoom en picos: {', '.join(f'{p:.1f}s' for p in peaks)}")
         words = transcribe(clip, lang) if subs else []
+        text = " ".join(w.word.strip() for w in words)
+        ia_meta = None
+        if ia and text and not title:  # sin título → lo escribe la IA
+            import ia as ia_mod
+            ia_meta = ia_mod.gancho_clip(text, credit or "", chat or "")
+            if ia_meta:
+                title = ia_meta["titulo_gancho"]
+                print(f"  gancho IA: {title}")
         ass = build_ass(words, wd) if words else None
         render(clip, out, mode, ass, title, credit, facecam, peaks, sfx)
-        write_meta(out, title, credit, " ".join(w.word.strip() for w in words))
+        write_meta(out, title, credit, text, ia_meta)
     print(f"✔ listo: {out}  (+ {out.with_suffix('.txt').name})")
 
 
@@ -361,7 +382,7 @@ def batch(csv_path, outdir, **opts):
         print(f"\n=== [{n}/{len(rows)}] {g('url')} ===")
         try:
             process(g("url"), out, g("start"), g("end"), g("title"), g("credit"),
-                    g("mode") or "blur", g("facecam"), **opts)
+                    g("mode") or "blur", g("facecam"), chat=g("chat") or "", **opts)
             ok += 1
         except Exception as e:  # sigue con el siguiente clip
             print(f"✘ error: {e}")
@@ -383,10 +404,12 @@ def main():
     p.add_argument("--no-subs", action="store_true")
     p.add_argument("--no-cut", action="store_true", help="no quitar silencios")
     p.add_argument("--no-fx", action="store_true", help="sin zooms/SFX automáticos")
+    p.add_argument("--no-ia", action="store_true", help="no usar IA para títulos")
     p.add_argument("-o", "--output", default="output/clip.mp4")
     a = p.parse_args()
 
-    opts = dict(lang=a.lang, subs=not a.no_subs, cut=not a.no_cut, fx=not a.no_fx, sfx=a.sfx)
+    opts = dict(lang=a.lang, subs=not a.no_subs, cut=not a.no_cut, fx=not a.no_fx, sfx=a.sfx,
+                ia=not a.no_ia)
     if a.batch:
         outdir = Path(a.output).parent if a.output.endswith(".mp4") else a.output
         batch(a.batch, outdir, **opts)

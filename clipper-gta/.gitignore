@@ -1,0 +1,5 @@
+cola/
+salida/
+output/
+__pycache__/
+*.json.bak
